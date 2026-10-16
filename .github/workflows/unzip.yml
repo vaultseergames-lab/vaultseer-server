@@ -1,0 +1,20 @@
+name: unzip
+on:
+  push:
+    paths: ['*.zip']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          unzip -oq vaultseer-server-flat.zip
+          git rm -q vaultseer-server-flat.zip
+          git config user.name bot
+          git config user.email bot@users.noreply.github.com
+          git add -A
+          git commit -m "unpack server"
+          git push
