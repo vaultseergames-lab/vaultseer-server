@@ -1,4 +1,3 @@
-{ "name": "vaultseer-server", "version": "0.1.0", "private": true, "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" },
+{ "name": "vaultseer-server", "version": "0.1.0", "private": true, "main": "src/server.js",
+  "scripts": { "start": "node src/server.js", "test": "node test/core.test.js" },
   "dependencies": { "ws": "8.18.0" } }

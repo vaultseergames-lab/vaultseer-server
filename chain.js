@@ -1,7 +1,7 @@
 'use strict';
 // Reads the Arena contract over plain JSON-RPC: who sits at table #id and is it active.
 const C = require('./crypto.js');
-const GAME_IDS = ['chess', 'checkers', 'backgammon', 'poker', 'durak', 'battleship', 'domino', 'gin', 'sixtysix', 'scopa', 'penalty', 'memory', 'bridge'];
+const GAME_IDS = ['chess', 'checkers', 'backgammon', 'poker', 'durak', 'battleship', 'domino', 'gin', 'sixtysix', 'scopa', 'penalty', 'memory', 'bridge', 'slots', 'roulette', 'connect4', 'reversi', 'ludo', 'liars'];
 const SEL = C.keccak(Buffer.from('getMatch(uint256)')).subarray(0, 4).toString('hex');
 function makeChain({ rpcUrl, arena, fetchFn = fetch }) {
   return {

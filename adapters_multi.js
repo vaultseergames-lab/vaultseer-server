@@ -154,4 +154,75 @@ const bridge = {
   legal: (st, who) => BRE.legal(st, idx(who)),
 };
 
-module.exports = { list: [durak, poker, domino, scopa, memory, bridge], SEATS, sideOf, idx, maskOf };
+// ---------------- slot duel and roulette (games of chance, provably fair) ----------------
+const CHE = require('./m_chance.js');
+const chance = (id, lo, hi) => ({
+  id, seats: [lo, hi], clock: { total: 0, perMove: 30000 }, simultaneous: true,
+  init: (n) => CHE.create(id, n),
+  actors: (st) => CHE.actors(st).map(sideOf),
+  find: (st, mv) => CHE.find(st, mv),
+  apply: (st, both) => CHE.apply(st, both),
+  result: (st) => CHE.result(st),
+  auto: () => CHE.auto(),
+  view: (st) => CHE.view(st),
+  legal: (st) => CHE.legal(st),
+});
+const slots = chance('slots', 2, 2), roulette = chance('roulette', 2, 9);
+
+// ---------------- connect four and reversi (2 players, the first move is drawn at random) ----------------
+const crypto = require('crypto');
+const VG6 = require('./games1.js'); require('./games6.js');
+const C4 = VG6.connect4, RV = VG6.reversi;
+const coin = () => 1 + (crypto.randomBytes(1)[0] & 1);
+const seatOfPlayer = (p) => (p === 1 ? 'a' : 'b');
+const connect4 = {
+  id: 'connect4', seats: [2, 2], clock: { total: 0, perMove: 45000 },
+  init() { const st = C4.init(coin()); st.first = st.turn; return st; },
+  actors: (st) => (st.over ? [] : [seatOfPlayer(st.turn)]),
+  find: (st, mv) => (mv && !st.over && Number.isInteger(mv.col) && mv.col >= 0 && mv.col < 7 && C4.row(st.b, mv.col) >= 0 ? { col: mv.col } : null),
+  apply(st, m) { C4.drop(st, m.col); return st; },
+  result: (st) => (st.over ? st.result : null),
+  auto: (st) => ({ col: C4.bot(st, 0) }),
+  view: (st) => ({ b: st.b, turn: seatOfPlayer(st.turn), n: st.n, at: st.at, line: st.line, first: seatOfPlayer(st.first), over: st.over }),
+  legal: (st, who) => (!st.over && seatOfPlayer(st.turn) === who ? C4.moves(st).map((col) => ({ col })) : []),
+};
+const reversi = {
+  id: 'reversi', seats: [2, 2], clock: { total: 0, perMove: 60000 },
+  init() { const st = RV.init(coin()); st.first = st.turn; return st; },
+  actors: (st) => (st.over ? [] : [seatOfPlayer(st.turn)]),
+  find: (st, mv) => (mv && !st.over && Number.isInteger(mv.cell) && RV.moves(st).indexOf(mv.cell) >= 0 ? { cell: mv.cell } : null),
+  apply(st, m) { RV.play(st, m.cell); return st; },
+  result: (st) => (st.over ? st.result : null),
+  auto: (st) => ({ cell: RV.bot(st, 0) }),
+  view(st) { return { b: st.b, turn: seatOfPlayer(st.turn), n: st.n, ev: st.ev ? { i: st.ev.i, p: st.ev.p, flips: st.ev.flips } : null, skipped: st.skipped ? seatOfPlayer(st.skipped) : null, counts: RV.counts(st.b), first: seatOfPlayer(st.first), over: st.over }; },
+  legal: (st, who) => (!st.over && seatOfPlayer(st.turn) === who ? RV.moves(st).map((cell) => ({ cell })) : []),
+};
+
+// ---------------- ludo and liar's dice (provably fair dice) ----------------
+const LUE = require('./m_ludo.js');
+const ludo = {
+  id: 'ludo', seats: [2, 4], clock: { total: 0, perMove: 30000 },
+  init: (n) => LUE.create(n),
+  actors: (st) => LUE.actors(st).map(sideOf),
+  find: (st, mv) => LUE.find(st, mv),
+  apply: (st, mv) => LUE.apply(st, mv),
+  result: (st) => LUE.result(st),
+  auto: (st) => LUE.auto(st),
+  view: (st) => LUE.view(st),
+  legal: (st) => LUE.legal(st),
+};
+const LDE = require('./m_liars.js');
+const liars = {
+  id: 'liars', seats: [2, 9], clock: { total: 0, perMove: 40000 }, hidden: true,
+  init: (n) => LDE.create(n),
+  simul: (st) => LDE.simul(st),
+  actors: (st) => LDE.actors(st).map(sideOf),
+  find: (st, mv) => LDE.find(st, mv),
+  apply: (st, x) => LDE.apply(st, x),
+  result: (st) => LDE.result(st),
+  auto: (st, who) => LDE.auto(st, who),
+  view: (st, who) => LDE.view(st, who),
+  legal: (st, who) => LDE.legal(st, who),
+};
+
+module.exports = { list: [durak, poker, domino, scopa, memory, bridge, slots, roulette, connect4, reversi, ludo, liars], SEATS, sideOf, idx, maskOf };
