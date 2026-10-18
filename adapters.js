@@ -413,7 +413,8 @@ const scopa = {
 const multi = require('./adapters_multi.js');
 const multiIds = new Set(multi.list.map((a) => a.id));
 // the games that have an N-seat version are served by that version only
-const list = [chess, checkers, domino, penalty, battleship, backgammon, durak, poker, gin, sixtysix, scopa].filter((a) => !multiIds.has(a.id)).concat(multi.list);
+const skill = require('./adapters_skill.js');
+const list = [chess, checkers, domino, penalty, battleship, backgammon, durak, poker, gin, sixtysix, scopa].filter((a) => !multiIds.has(a.id)).concat(multi.list, skill.list);
 for (const a of list) if (!a.seats) a.seats = [2, 2];
 module.exports.fleetOk = fleetOk;
 

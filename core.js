@@ -40,7 +40,7 @@ function makeCore({ now = () => Date.now(), sign = async () => null } = {}) {
 
   async function finish(m, outcome, why) {
     if (m.over) return;
-    m.over = true; m.outcome = outcome; m.why = why; m.actors = [];
+    m.over = true; m.outcome = outcome; m.why = why; m.actors = []; m.doneAt = now();
     try { m.sig = await sign(m.id, outcome); } catch (e) { m.sig = null; m.signError = String((e && e.message) || e); }
   }
 
@@ -168,6 +168,14 @@ function makeCore({ now = () => Date.now(), sign = async () => null } = {}) {
     return done;
   }
 
-  return { start, move, leave, tick, view: (id, addr) => { const m = matches.get(id); return m ? view(m, addr) : null; }, get: (id) => matches.get(id), matches, SEATS };
+  // forget matches that ended long ago (memory); a match that is still running is never touched
+  function purge(maxAgeMs, maxKeep = 5000) {
+    let n = 0;
+    const done = [...matches.values()].filter((m) => m.over && m.doneAt).sort((a, b) => a.doneAt - b.doneAt);
+    for (const m of done) if (now() - m.doneAt > maxAgeMs || matches.size > maxKeep) { matches.delete(m.id); n++; }
+    return n;
+  }
+
+  return { start, move, leave, tick, purge, view: (id, addr) => { const m = matches.get(id); return m ? view(m, addr) : null; }, get: (id) => matches.get(id), matches, SEATS };
 }
 module.exports = makeCore;
