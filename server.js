@@ -5,8 +5,10 @@ const { WebSocketServer } = require('ws');
 const crypto_ = require('./crypto');
 const makeCore = require('./core');
 const { byId } = require('./adapters');
+const { BIG_STAKE } = require('./age');
 
-function createServer({ chain, signer, port = 8080, now = Date.now, restartGuardSec = 180, keepDoneMs = 48 * 3600 * 1000, verify = (id, sig) => crypto_.recoverMessage('Vaultseer match #' + id, sig) }) {
+function createServer({ chain, signer, port = 8080, now = Date.now, restartGuardSec = 180, keepDoneMs = 48 * 3600 * 1000, verify = (id, sig) => crypto_.recoverMessage('Vaultseer match #' + id, sig), age = null, ratings = null, gas = null, keeper = null }) {
+  const bigStake = new Map();                           // match id -> true when the stake needs the age confirmation
   const core = makeCore({ now, sign: signer.sign });
   const conns = new Map();
   // --- abuse protection ---
@@ -20,7 +22,25 @@ function createServer({ chain, signer, port = 8080, now = Date.now, restartGuard
   const push = (id) => { for (const c of conns.get(id) || []) send(c.ws, { t: 'state', ...core.view(id, c.addr) }); };
 
   const server = http.createServer((req, res) => {
-    if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, matches: core.matches.size, signer: signer.address })); return; }
+    // public player table, read by the website
+    const u = new URL(req.url, 'http://x'), cors = { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=10', 'content-type': 'application/json' };
+    let mm;
+    if (ratings && (mm = /^\/profile\/(0x[0-9a-fA-F]{40})$/.exec(u.pathname))) { res.writeHead(200, cors); res.end(JSON.stringify({ addr: mm[1].toLowerCase(), ...ratings.profile(mm[1]) })); return; }
+    if (ratings && u.pathname === '/top') { res.writeHead(200, cors); res.end(JSON.stringify(ratings.top(Number(u.searchParams.get('n')) || 20))); return; }
+    if (gas && u.pathname === '/gas') {
+      const h = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'content-type': 'application/json' };
+      if (req.method === 'OPTIONS') { res.writeHead(204, h); res.end(); return; }
+      if (req.method !== 'POST') { res.writeHead(405, h); res.end(); return; }
+      let body = ''; req.on('data', (c) => { body += c; if (body.length > 400) req.destroy(); });
+      req.on('end', async () => {
+        let a = ''; try { a = JSON.parse(body).addr; } catch (e) { /* bad body */ }
+        const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+        let r; try { r = await gas.drip(a, ip); } catch (e) { r = { ok: false, err: 'error' }; }
+        res.writeHead(200, h); res.end(JSON.stringify(r));
+      });
+      return;
+    }
+    if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, matches: core.matches.size, signer: signer.address, ratings: ratings ? ratings.status() : null, keeper: keeper ? keeper.status() : null, gas: gas ? gas.status() : null })); return; }
     res.writeHead(404); res.end();
   });
   const wss = new WebSocketServer({ server, maxPayload: 4096 });
@@ -47,6 +67,8 @@ function createServer({ chain, signer, port = 8080, now = Date.now, restartGuard
             const on = await chain.getMatch(BigInt(id));
             if (on.status !== 2) return send(ws, { t: 'error', err: badSet(id, 'match is not active on the contract') });
             if (!byId[on.game]) return send(ws, { t: 'error', err: 'this game is not available on the server yet' });
+            bigStake.set(id, typeof on.stake === 'bigint' && on.stake > BIG_STAKE);
+            if (bigStake.get(id) && !(age && age.check(addr, msg.age))) return send(ws, { t: 'error', err: 'age verification required' });
             // The server keeps matches in memory only. If it does not know a match that started long ago it was restarted:
             // never start such a game again from scratch (a loser could get a second try). The stakes come back by themselves
             // 24 hours after the start (button "Return stakes").
@@ -55,6 +77,7 @@ function createServer({ chain, signer, port = 8080, now = Date.now, restartGuard
             m = core.get(id);
           }
           if (!m.players.includes(addr)) return send(ws, { t: 'error', err: 'you are not in this match' });
+          if (bigStake.get(id) && !(age && age.check(addr, msg.age))) return send(ws, { t: 'error', err: 'age verification required' });
           me = { id, addr };
           if (!conns.has(id)) conns.set(id, new Set());
           conns.get(id).add({ ws, addr });
@@ -83,5 +106,14 @@ if (require.main === module) {
   const arena = need('ARENA'), chainId = BigInt(need('CHAIN_ID'));
   const signer = require('./signer')({ privateKey: need('SIGNER_KEY'), chainId, arena });
   const chain = require('./chain')({ rpcUrl: need('RPC_URL'), arena });
-  createServer({ chain, signer, port: Number(process.env.PORT || 8080) }).listen().then((p) => console.log('Vaultseer game server on :' + p + ', signer ' + signer.address));
+  const ratings = require('./ratings')({ chain, fromBlock: process.env.ARENA_BLOCK ? Number(process.env.ARENA_BLOCK) : undefined }); ratings.start();
+  // optional gas drip: needs GAS_KEY (a separate small wallet) and GAS_TOKENS (comma list of stake token addresses)
+  const queue = process.env.GAS_KEY ? require('./txq')({ rpcUrl: process.env.RPC_URL, privateKey: process.env.GAS_KEY, chainId }) : null;   // one line for every transaction of the service wallet
+  const gas = process.env.GAS_KEY ? require('./gas')({ queue, rpcUrl: process.env.RPC_URL, privateKey: process.env.GAS_KEY, chainId, tokens: String(process.env.GAS_TOKENS || '').split(',').map((x) => x.trim()).filter(Boolean),
+    dripWei: process.env.GAS_DRIP_WEI || (chainId === 137n ? '200000000000000000' : '1000000000000000'),
+    reserveWei: process.env.VAULT ? (process.env.GAS_RESERVE_WEI || (chainId === 137n ? '2000000000000000000' : '0')) : 0 }) : null;
+  // the service wallet (GAS_KEY) pays for the gas drip and for the keeper; both go through the one queue above
+  const keeper = queue && process.env.VAULT ? require('./keeper_service')({ queue, vault: process.env.VAULT }) : null;
+  if (keeper) keeper.start();
+  createServer({ chain, signer, port: Number(process.env.PORT || 8080), age: require('./age')({ attester: process.env.AGE_ATTESTER }), ratings, gas, keeper }).listen().then((p) => console.log('Vaultseer game server on :' + p + ', signer ' + signer.address));
 }
