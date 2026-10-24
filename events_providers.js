@@ -15,7 +15,7 @@ function makeHttp({ fetchFn = fetch, now = () => Date.now(), dailyCap = 90 }) {
     if (used >= dailyCap) { if (c) return c.v; throw new Error('daily request cap reached'); }
     used++;
     const r = await fetchFn(url, { headers });
-    if (!r.ok) { if (c) return c.v; throw new Error('http ' + r.status); }
+    if (!r.ok) { if (c) return c.v; let b = ''; try { b = String(await r.text()).replace(/\s+/g, ' ').slice(0, 110); } catch (e) { /* no body */ } throw new Error('http ' + r.status + (b ? ' ' + b : '')); }
     const v = await r.json(); cache.set(url, { t, v }); return v;
   };
 }

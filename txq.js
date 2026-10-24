@@ -19,9 +19,18 @@ function makeTxQueue({ rpcUrl, privateKey, chainId, fetchFn = fetch, minTipWei, 
   const address = C.addrOf(C.mul(key));
   const cid = BigInt(chainId);
   const floor = minTipWei !== undefined ? BigInt(minTipWei) : (cid === 137n ? 30_000_000_000n : 0n);
-  const rpc = async (method, params) => {
+  let rpc = async (method, params) => {
     const res = await fetchFn(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
     const j = await res.json(); if (j.error) throw new Error(j.error.message || 'rpc error'); return j.result;
+  };
+  // a public node sometimes answers "archive requests require a personal token" or a rate-limit error for a plain request: ask again a moment later
+  const TRANSIENT = /archive requests|rate limit|too many|timeout|timed out|temporar|unavailable|try again|bad gateway|fetch failed/i;
+  const rpcOnce = rpc;
+  rpc = async (method, params) => {
+    for (let i = 0; ; i++) {
+      try { return await rpcOnce(method, params); }
+      catch (e) { if (method === 'eth_sendRawTransaction' || i >= 3 || !TRANSIENT.test(String(e && e.message))) throw e; await sleep(1500); }
+    }
   };
   async function fees() {
     const gp = BigInt(await rpc('eth_gasPrice', []));
@@ -45,7 +54,7 @@ function makeTxQueue({ rpcUrl, privateKey, chainId, fetchFn = fetch, minTipWei, 
       const hash = await rpc('eth_sendRawTransaction', [raw]);
       if (!wait) return hash;
       for (let i = 0; i < receiptTries; i++) {
-        const r = await rpc('eth_getTransactionReceipt', [hash]);
+        let r = null; try { r = await rpc('eth_getTransactionReceipt', [hash]); } catch (e) { r = null; }
         if (r) { if (r.status !== '0x1') throw new Error('transaction reverted ' + hash); return r; }
         await sleep(2000);
       }
