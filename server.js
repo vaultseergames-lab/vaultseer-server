@@ -7,7 +7,7 @@ const makeCore = require('./core');
 const { byId } = require('./adapters');
 const { BIG_STAKE } = require('./age');
 
-function createServer({ chain, signer, port = 8080, now = Date.now, restartGuardSec = 180, keepDoneMs = 48 * 3600 * 1000, verify = (id, sig) => crypto_.recoverMessage('Vaultseer match #' + id, sig), age = null, ratings = null, gas = null, keeper = null }) {
+function createServer({ chain, signer, port = 8080, now = Date.now, restartGuardSec = 180, keepDoneMs = 48 * 3600 * 1000, verify = (id, sig) => crypto_.recoverMessage('Vaultseer match #' + id, sig), age = null, ratings = null, gas = null, keeper = null, events = null }) {
   const bigStake = new Map();                           // match id -> true when the stake needs the age confirmation
   const core = makeCore({ now, sign: signer.sign });
   const conns = new Map();
@@ -40,7 +40,7 @@ function createServer({ chain, signer, port = 8080, now = Date.now, restartGuard
       });
       return;
     }
-    if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, matches: core.matches.size, signer: signer.address, ratings: ratings ? ratings.status() : null, keeper: keeper ? keeper.status() : null, gas: gas ? gas.status() : null })); return; }
+    if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, matches: core.matches.size, signer: signer.address, ratings: ratings ? ratings.status() : null, keeper: keeper ? keeper.status() : null, events: events ? events.status() : null, gas: gas ? gas.status() : null })); return; }
     res.writeHead(404); res.end();
   });
   const wss = new WebSocketServer({ server, maxPayload: 4096 });
@@ -115,5 +115,9 @@ if (require.main === module) {
   // the service wallet (GAS_KEY) pays for the gas drip and for the keeper; both go through the one queue above
   const keeper = queue && process.env.VAULT ? require('./keeper_service')({ queue, vault: process.env.VAULT }) : null;
   if (keeper) keeper.start();
-  createServer({ chain, signer, port: Number(process.env.PORT || 8080), age: require('./age')({ attester: process.env.AGE_ATTESTER }), ratings, gas, keeper }).listen().then((p) => console.log('Vaultseer game server on :' + p + ', signer ' + signer.address));
+  // optional: the Events feature (VaultseerPass). Off unless EVENTS is set; the service wallet must be the operator of that contract.
+  const evProviders = process.env.EVENTS ? require('./events_service').providersFromEnv() : [];
+  const events = queue && process.env.EVENTS && evProviders.length ? require('./events_service')({ queue, contract: process.env.EVENTS, providers: evProviders }) : null;
+  if (events) events.start();
+  createServer({ chain, signer, port: Number(process.env.PORT || 8080), age: require('./age')({ attester: process.env.AGE_ATTESTER }), ratings, gas, keeper, events }).listen().then((p) => console.log('Vaultseer game server on :' + p + ', signer ' + signer.address));
 }
