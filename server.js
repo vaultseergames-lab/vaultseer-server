@@ -40,6 +40,7 @@ function createServer({ chain, signer, port = 8080, now = Date.now, restartGuard
       });
       return;
     }
+    if (req.url === '/events') { res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=20' }); res.end(JSON.stringify({ meta: events && events.meta ? events.meta() : {} })); return; }
     if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, matches: core.matches.size, signer: signer.address, ratings: ratings ? ratings.status() : null, keeper: keeper ? keeper.status() : null, events: events ? events.status() : null, gas: gas ? gas.status() : null })); return; }
     res.writeHead(404); res.end();
   });

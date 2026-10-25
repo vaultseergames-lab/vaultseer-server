@@ -19,7 +19,7 @@ function makeEventsService({ queue, contract, providers, intervalMs = 120000, lo
     st.running = false; st.lastRun = now(); st.runs++; return st;
   }
   let timer = null;
-  return { tick, start() { if (!timer) { timer = setInterval(tick, intervalMs); tick(); } }, stop() { if (timer) clearInterval(timer); timer = null; },
+  return { tick, meta: () => run.meta(), start() { if (!timer) { timer = setInterval(tick, intervalMs); tick(); } }, stop() { if (timer) clearInterval(timer); timer = null; },
     status: () => ({ contract, providers: providers.map((p) => p.sport), runs: st.runs, lastRun: st.lastRun, lastActions: st.lastActions, lastError: st.lastError }) };
 }
 // providers from the environment: only the ones that have a key

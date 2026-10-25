@@ -35,6 +35,8 @@ module.exports = function makeEventsKeeper({ io, contract, keccakHex, providers,
   const call = async (sig, args = []) => words(await io.call(contract, '0x' + S[sig] + args.join('')));
   const refOf = (sport, id) => '0x' + keccakHex(Buffer.from('vaultseer-event|' + sport + '|' + id));
 
+  const metaOf = (f) => [clean(f.p.sport), clean(f.fx.league), clean(f.fx.home), clean(f.fx.away), String(Number(f.fx.kickoff)), clean(f.p.kind)].join('|');
+  const metaById = new Map();        // id -> match text (the site asks for it, so it does not have to scan old logs)
   const cache = new Map();           // id -> { ref, closed: bool } for events we already know about
   const refToId = new Map();         // ref -> id
   const seen = new Map();            // id -> { value, since } result candidates waiting for confirmation
@@ -54,7 +56,8 @@ module.exports = function makeEventsKeeper({ io, contract, keccakHex, providers,
     return out;
   }
 
-  return async function run() {
+  const meta = () => { const o = {}; Array.from(metaById.keys()).sort((a, b) => a - b).slice(-80).forEach((id) => { o[id] = metaById.get(id); }); return o; };
+  const run = async function run() {
     const now = await io.now();
     const actions = [], errors = [];
     const act = async (name, data) => { log('events ->', name); await io.send(contract, data); actions.push(name); };
@@ -87,6 +90,8 @@ module.exports = function makeEventsKeeper({ io, contract, keccakHex, providers,
     }
     const byRef = new Map(fixtures.map((f) => [f.ref, f]));
 
+    for (const [ref, id] of refToId) { const f = byRef.get(ref); if (f) metaById.set(id, metaOf(f)); }
+
     // 3. create events for matches that start soon
     if (!paused) {
       let openBps = evs.filter((e) => e.status === ST.Open).reduce((a, e) => a + e.bps, 0);
@@ -97,7 +102,7 @@ module.exports = function makeEventsKeeper({ io, contract, keccakHex, providers,
         const k = Number(f.fx.kickoff);
         if (!(k >= now + O.minLeadSec && k <= now + O.aheadSec)) continue;
         if (openBps + f.p.bps > O.maxOpenBps) continue;
-        const meta = [clean(f.p.sport), clean(f.fx.league), clean(f.fx.home), clean(f.fx.away), String(k), clean(f.p.kind)].join('|');
+        const meta = metaOf(f);
         if (!f.fx.home || !f.fx.away) continue;
         await guard('create ' + f.fx.id, async () => {
           const data = '0x' + S.createEvent + wNum(k) + wNum(f.p.bps) + pad(f.ref.slice(2)) + wNum(128) + wNum(Buffer.byteLength(meta)) +
@@ -108,7 +113,7 @@ module.exports = function makeEventsKeeper({ io, contract, keccakHex, providers,
       }
       if (made) { // learn the new ids right away
         const n2 = Number(big((await call('eventCount'))[0]));
-        for (let id = count + 1; id <= n2; id++) { const e = await readEvent(id); cache.set(id, { ref: e.ref, done: false }); refToId.set(e.ref, id); evs.push(e); }
+        for (let id = count + 1; id <= n2; id++) { const e = await readEvent(id); cache.set(id, { ref: e.ref, done: false }); refToId.set(e.ref, id); evs.push(e); const f = byRef.get(e.ref); if (f) metaById.set(id, metaOf(f)); }
         st.known = n2;
       }
     }
@@ -174,5 +179,7 @@ module.exports = function makeEventsKeeper({ io, contract, keccakHex, providers,
     st.runs++; st.errors = errors; st.lastActions = actions.slice();
     return actions;
   };
+  run.meta = meta;
+  return run;
 };
 module.exports.ST = ST;
