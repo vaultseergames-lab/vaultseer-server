@@ -87,6 +87,40 @@ async function makeGameService({ store, prices, payer = null, now = Date.now, en
     try { const r = await fetchFn('https://api.telegram.org/bot' + tgToken + '/getChatMember?chat_id=' + encodeURIComponent(tgChannel) + '&user_id=' + tgId); const j = await r.json(); return !!(j.ok && ['member', 'administrator', 'creator'].includes(j.result.status)); } catch (e) { return false; }
   }
 
+  // ---- linking Telegram through the bot: the player opens t.me/<bot>?start=<code> and presses Start ----
+  const tgMac = (addr, exp) => crypto.createHmac('sha256', state.secret).update('tg|' + addr + '|' + exp).digest('hex').slice(0, 12);
+  function tgCode(addr) { const exp = Math.floor(now() / 1000) + 1800; return addr.slice(2).toLowerCase() + '_' + exp.toString(36) + '_' + tgMac(addr.toLowerCase(), exp.toString(36)); }
+  function tgCodeAddr(code) {
+    const m = /^([0-9a-f]{40})_([0-9a-z]{1,10})_([0-9a-f]{12})$/.exec(String(code || '')); if (!m) return null;
+    const addr = '0x' + m[1]; if (m[3] !== tgMac(addr, m[2])) return null;
+    return parseInt(m[2], 36) * 1000 > now() ? addr : null;
+  }
+  async function tgApi(method, params) {
+    const r = await fetchFn('https://api.telegram.org/bot' + tgToken + '/' + method, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params || {}) });
+    return r.json();
+  }
+  async function tgReply(chatId, text) { try { await tgApi('sendMessage', { chat_id: chatId, text }); } catch (e) { /* ignore */ } }
+  let tgOffset = 0;
+  async function tgHandleMessage(m) {
+    if (!m || !m.from || !m.chat || m.chat.type !== 'private') return;
+    const text = String(m.text || ''), c = /^\/start(?:@\w+)?\s+(\S+)/.exec(text);
+    if (!c) { await tgReply(m.chat.id, 'Vaultseer: чтобы привязать Telegram, откройте vaultseer.com, зайдите в игру и нажмите «Привязать Telegram». / To link Telegram, open vaultseer.com, go to the game and press "Link Telegram".'); return; }
+    const addr = tgCodeAddr(c[1]);
+    if (!addr) { await tgReply(m.chat.id, 'Ссылка устарела. Вернитесь на сайт и нажмите «Привязать Telegram» ещё раз. / This link has expired. Go back to the site and press "Link Telegram" again.'); return; }
+    const r = game.bindTelegram(addr, String(m.from.id), now());
+    if (r.ok) { saver.touch(); await tgReply(m.chat.id, 'Готово! Telegram привязан к кошельку ' + addr.slice(0, 6) + '…' + addr.slice(-4) + '. Вернитесь на сайт. / Done! Telegram is linked to wallet ' + addr.slice(0, 6) + '…' + addr.slice(-4) + '. Go back to the site.'); }
+    else await tgReply(m.chat.id, 'Не получилось: ' + r.err);
+  }
+  async function tgPollOnce(waitSec) {
+    if (!tgToken) return 0;
+    const j = await tgApi('getUpdates', { timeout: waitSec, offset: tgOffset, allowed_updates: ['message'] });
+    if (!j || !j.ok) throw new Error('getUpdates failed');
+    for (const up of j.result) { tgOffset = up.update_id + 1; try { await tgHandleMessage(up.message); } catch (e) { log('telegram:', String(e.message || e)); } }
+    return j.result.length;
+  }
+  let tgRun = false;
+  async function tgLoop() { while (tgRun) { try { await tgPollOnce(25); } catch (e) { await new Promise((r) => setTimeout(r, 5000)); } } }
+
   async function handle(req, res, u) {
     if (req.method === 'OPTIONS') return out(res, 204, {});
     const ip = ipOf(req), path = u.pathname.replace(/^\/game/, '') || '/';
@@ -110,7 +144,7 @@ async function makeGameService({ store, prices, payer = null, now = Date.now, en
       if (path.startsWith('/admin')) {
         if (!me || !admins.includes(me)) return out(res, 403, { ok: false, err: 'not allowed' });
         if (path === '/admin' && req.method === 'GET') {
-          let bal = null; if (payer) { try { bal = await payer.balances(); } catch (e) { bal = { error: String(e.message || e).slice(0, 100) }; } }
+          let bal = null; if (payer) { try { bal = await Promise.race([payer.balances(), new Promise((_, rej) => setTimeout(() => rej(new Error('сеть Polygon не ответила за 9 секунд (проверьте RPC_URL)')), 9000))]); } catch (e) { bal = { error: String(e.message || e).slice(0, 100) }; } }
           return out(res, 200, { ok: true, ...game.admin(), payer: payer ? { address: payer.address, token: payer.token, ...bal } : null, store: store.kind, status, tg: !!tgToken });
         }
         const b = await body(req); if (!b) return out(res, 400, { ok: false, err: 'bad request' });
@@ -136,6 +170,9 @@ async function makeGameService({ store, prices, payer = null, now = Date.now, en
         const kind = String(b.kind);
         if (kind === 'tg') { const u2 = state.users[me]; if (u2 && u2.tg && !(await inChannel(u2.tg))) return out(res, 200, { ok: false, err: 'join the Telegram channel first' }); }
         r = game.claim(me, kind, t);
+      } else if (path === '/telegram/start') {
+        if (!tgToken || !tgBot) return out(res, 200, { ok: false, err: 'Telegram is not set up' });
+        r = { ok: true, link: 'https://t.me/' + tgBot + '?start=' + tgCode(me) };
       } else if (path === '/telegram') {
         const id = verifyTelegram(b.auth); r = id ? game.bindTelegram(me, id, t) : { ok: false, err: 'Telegram check failed' };
       } else if (path === '/gift') r = game.setGift(me, String(b.coin), t);
@@ -148,8 +185,9 @@ async function makeGameService({ store, prices, payer = null, now = Date.now, en
 
   return {
     game, state, handle, tick, status, saver,
-    start() { if (!timer) { timer = setInterval(tick, tickMs); if (timer.unref) timer.unref(); tick(); } },
-    async stop() { if (timer) clearInterval(timer); timer = null; await saver.flush(); },
+    start() { if (!timer) { timer = setInterval(tick, tickMs); if (timer.unref) timer.unref(); tick(); } if (tgToken && !tgRun) { tgRun = true; tgLoop(); } },
+    tgPollOnce, tgHandleMessage, tgCodeAddr,
+    async stop() { tgRun = false; if (timer) clearInterval(timer); timer = null; await saver.flush(); },
     summary: () => ({ ...status, players: Object.keys(state.users).length, paused: state.paused, payer: payer ? payer.address : null }),
   };
 }
