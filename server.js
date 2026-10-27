@@ -7,7 +7,7 @@ const makeCore = require('./core');
 const { byId } = require('./adapters');
 const { BIG_STAKE } = require('./age');
 
-function createServer({ chain, signer, port = 8080, now = Date.now, restartGuardSec = 180, keepDoneMs = 48 * 3600 * 1000, verify = (id, sig) => crypto_.recoverMessage('Vaultseer match #' + id, sig), age = null, ratings = null, gas = null, keeper = null, events = null }) {
+function createServer({ chain, signer, port = 8080, now = Date.now, restartGuardSec = 180, keepDoneMs = 48 * 3600 * 1000, verify = (id, sig) => crypto_.recoverMessage('Vaultseer match #' + id, sig), age = null, ratings = null, gas = null, keeper = null, events = null, game = null }) {
   const bigStake = new Map();                           // match id -> true when the stake needs the age confirmation
   const core = makeCore({ now, sign: signer.sign });
   const conns = new Map();
@@ -25,6 +25,7 @@ function createServer({ chain, signer, port = 8080, now = Date.now, restartGuard
     // public player table, read by the website
     const u = new URL(req.url, 'http://x'), cors = { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=10', 'content-type': 'application/json' };
     let mm;
+    if (game && u.pathname.startsWith('/game')) { game.handle(req, res, u); return; }
     if (ratings && (mm = /^\/profile\/(0x[0-9a-fA-F]{40})$/.exec(u.pathname))) { res.writeHead(200, cors); res.end(JSON.stringify({ addr: mm[1].toLowerCase(), ...ratings.profile(mm[1]) })); return; }
     if (ratings && u.pathname === '/top') { res.writeHead(200, cors); res.end(JSON.stringify(ratings.top(Number(u.searchParams.get('n')) || 20))); return; }
     if (gas && u.pathname === '/gas') {
@@ -41,7 +42,7 @@ function createServer({ chain, signer, port = 8080, now = Date.now, restartGuard
       return;
     }
     if (req.url === '/events') { res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=20' }); res.end(JSON.stringify({ meta: events && events.meta ? events.meta() : {} })); return; }
-    if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, matches: core.matches.size, signer: signer.address, ratings: ratings ? ratings.status() : null, keeper: keeper ? keeper.status() : null, events: events ? events.status() : null, gas: gas ? gas.status() : null })); return; }
+    if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, matches: core.matches.size, signer: signer.address, ratings: ratings ? ratings.status() : null, keeper: keeper ? keeper.status() : null, events: events ? events.status() : null, gas: gas ? gas.status() : null, game: game ? game.summary() : null })); return; }
     res.writeHead(404); res.end();
   });
   const wss = new WebSocketServer({ server, maxPayload: 4096 });
@@ -120,5 +121,16 @@ if (require.main === module) {
   const evProviders = process.env.EVENTS ? require('./events_service').providersFromEnv() : [];
   const events = queue && process.env.EVENTS && evProviders.length ? require('./events_service')({ queue, contract: process.env.EVENTS, providers: evProviders }) : null;
   if (events) events.start();
-  createServer({ chain, signer, port: Number(process.env.PORT || 8080), age: require('./age')({ attester: process.env.AGE_ATTESTER }), ratings, gas, keeper, events }).listen().then((p) => console.log('Vaultseer game server on :' + p + ', signer ' + signer.address));
+  // optional: the School of the Seer game (Seevar, Visions, weekly exchange). Off only if GAME_OFF is set. Prize payouts need PAYOUT_KEY (a separate wallet that holds only the prize money).
+  const startGame = async () => {
+    if (process.env.GAME_OFF) return null;
+    const payQueue = process.env.PAYOUT_KEY ? require('./txq')({ rpcUrl: process.env.RPC_URL, privateKey: process.env.PAYOUT_KEY, chainId }) : null;
+    const payer = payQueue ? require('./game_payer')({ queue: payQueue, token: process.env.PAYOUT_TOKEN || undefined }) : null;
+    const g = await require('./game_service')({ store: require('./game_store').makeStore(), prices: require('./game_prices')(), payer });
+    g.start();
+    const bye = async () => { try { await g.stop(); } finally { process.exit(0); } };
+    process.on('SIGTERM', bye); process.on('SIGINT', bye);
+    return g;
+  };
+  startGame().catch((e) => { console.error('game failed to start:', e); return null; }).then((game) => createServer({ chain, signer, port: Number(process.env.PORT || 8080), age: require('./age')({ attester: process.env.AGE_ATTESTER }), ratings, gas, keeper, events, game }).listen()).then((p) => console.log('Vaultseer game server on :' + p + ', signer ' + signer.address));
 }
